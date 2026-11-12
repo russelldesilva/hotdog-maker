@@ -20,6 +20,10 @@ typedef struct {
     int maker_id; 
 } hotdog_message;
 
+// constants
+const int HOTDOG_MAKING_DURATION = 4;
+const int SENDING_MSG_DURATION = 1;
+
 // inputs
 int N; // number of hotdogs to be made
 int S; // number of slots in the hotdog pool
@@ -47,7 +51,33 @@ void do_work(int n) {
     }
 }
 
-void make_hotdog() {}
+void *make_hotdog(void *arg) {
+    int maker_id = *(int *)arg;
+
+    while (1) {
+        pthread_mutex_lock(&id_lock);
+        int hotdog_id = next_id++;
+        pthread_mutex_unlock(&id_lock);
+        
+        // stop if we have made enough hotdogs
+        if (hotdog_id > N) {
+            break;
+        }
+
+        do_work(HOTDOG_MAKING_DURATION); // simulate making a hotdog
+        do_work(SENDING_MSG_DURATION); // simulate sending the message
+
+        hotdog_message msg = {.type = HOTDOG_MSG, .hotdog_id = hotdog_id, .maker_id = maker_id};
+        mq_send(mq, (char *)&msg, sizeof(msg), 0);
+
+        pthread_mutex_lock(&log_lock);
+        fprintf(log_fp, "m%d puts %d\n", maker_id, hotdog_id);
+        fflush(log_fp);
+        pthread_mutex_unlock(&log_lock);
+    }
+
+    return NULL;
+}
 
 void pack_hotdog() {}
 
