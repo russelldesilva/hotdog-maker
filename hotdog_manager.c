@@ -23,6 +23,8 @@ typedef struct {
 // constants
 const int HOTDOG_MAKING_DURATION = 4;
 const int SENDING_MSG_DURATION = 1;
+const int RECEIVING_MSG_DURATION = 1;
+const int HOTDOG_PACKING_DURATION = 2;
 
 // inputs
 int N; // number of hotdogs to be made
@@ -79,7 +81,29 @@ void *make_hotdog(void *arg) {
     return NULL;
 }
 
-void pack_hotdog() {}
+void *pack_hotdog(void *arg) {
+    int packer_id = *(int *)arg;
+
+    while (1) {
+        hotdog_message msg;
+        mq_receive(mq, (char *)&msg, sizeof(msg), NULL);
+
+        // stop once we receive a terminate message
+        if (msg.type == TERMINATE_MSG) {
+            break;
+        }
+
+        do_work(RECEIVING_MSG_DURATION); // simulate receiving message
+        do_work(HOTDOG_PACKING_DURATION); // simulate packing a hotdog
+
+        pthread_mutex_lock(&log_lock);
+        fprintf(log_fp, "p%d gets %d from m%d\n", packer_id, msg.hotdog_id, msg.maker_id);
+        fflush(log_fp);
+        pthread_mutex_unlock(&log_lock);
+    }
+
+    return NULL;
+}
 
 // Parses s as a base-10 integer in [min, max] and stores it in *out.
 // Prints an error to stderr and returns -1 on failure, 0 on success.
