@@ -9,6 +9,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <signal.h>
+#define QUEUE_NAME "/hotdog_queue"
 
 // --- Globals ---
 // for storing messages
@@ -28,8 +29,23 @@ int P; // number of packing machines
 // message queue
 mqd_t mq;
 
+// mutexes 
+pthread_mutex_t id_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t log_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// id of next hotdog
+int next_id = 1;
+
 // log file
 FILE *log_fp;
+
+
+void do_work(int n) {
+    for (int i = 0; i < n; i++) {
+        long m = 300000000L;
+        while (m > 0) m--;
+    }
+}
 
 void make_hotdog() {}
 
@@ -75,6 +91,46 @@ int main(int argc, char *argv[]) {
         parse_int(argv[4], "P (number of packers)", 1, 30, &P)) {
         return 1;
     }
+
+    // --- Step 3: open the message queue ---
+    mq_unlink(QUEUE_NAME); // clear out a leftover queue from a crashed run (error ignored)
+
+    struct mq_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.mq_flags = 0;                         // blocking mode
+    attr.mq_maxmsg = S;                        // pool capacity
+    attr.mq_msgsize = sizeof(hotdog_message);  // one message = one hot dog
+
+    mq = mq_open(QUEUE_NAME, O_CREAT | O_RDWR, 0644, &attr);
+    if (mq == (mqd_t)-1) {
+        perror("mq_open");
+        if (errno == EINVAL) {
+            fprintf(stderr, "Note: S may exceed /proc/sys/fs/mqueue/msg_max\n");
+        }
+        return 1;
+    }
+
+    // --- Step 4: write the log header ---
+    log_fp = fopen("log.txt", "w"); // "w" wipes the previous run's log
+    if (log_fp == NULL) {
+        perror("fopen log.txt");
+        mq_close(mq);
+        mq_unlink(QUEUE_NAME);
+        return 1;
+    }
+
+    fprintf(log_fp, "order:%d\n", N);
+    fprintf(log_fp, "capacity:%d\n", S);
+    fprintf(log_fp, "making machines:%d\n", M);
+    fprintf(log_fp, "packing machines:%d\n", P);
+    fprintf(log_fp, "-----\n");
+    fflush(log_fp);
+
+    // TODO Steps 5-8: start threads, shut down, write summary
+
+    fclose(log_fp);
+    mq_close(mq);
+    mq_unlink(QUEUE_NAME);
 
     return 0;
 }
