@@ -21,10 +21,10 @@ typedef struct {
 } hotdog_message;
 
 // constants
-const int HOTDOG_MAKING_DURATION = 4;
+const int MAKING_HOTDOG_DURATION = 4;
 const int SENDING_MSG_DURATION = 1;
 const int RECEIVING_MSG_DURATION = 1;
-const int HOTDOG_PACKING_DURATION = 2;
+const int PACKING_HOTDOG_DURATION = 2;
 
 // inputs
 int N; // number of hotdogs to be made
@@ -66,7 +66,7 @@ void *make_hotdog(void *arg) {
             break;
         }
 
-        do_work(HOTDOG_MAKING_DURATION); // simulate making a hotdog
+        do_work(MAKING_HOTDOG_DURATION); // simulate making a hotdog
         do_work(SENDING_MSG_DURATION); // simulate sending the message
 
         hotdog_message msg = {.type = HOTDOG_MSG, .hotdog_id = hotdog_id, .maker_id = maker_id};
@@ -94,7 +94,7 @@ void *pack_hotdog(void *arg) {
         }
 
         do_work(RECEIVING_MSG_DURATION); // simulate receiving message
-        do_work(HOTDOG_PACKING_DURATION); // simulate packing a hotdog
+        do_work(PACKING_HOTDOG_DURATION); // simulate packing a hotdog
 
         pthread_mutex_lock(&log_lock);
         fprintf(log_fp, "p%d gets %d from m%d\n", packer_id, msg.hotdog_id, msg.maker_id);
@@ -137,8 +137,6 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // N must be parsed first: S's upper bound depends on it.
-    // || short-circuits, so parsing stops at the first invalid argument.
     if (parse_int(argv[1], "N (number of hotdogs)", 1, INT_MAX, &N) ||
         parse_int(argv[2], "S (pool size)", 1, (long)N - 1, &S) ||
         parse_int(argv[3], "M (number of makers)", 1, 30, &M) ||
@@ -146,7 +144,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // --- Step 3: open the message queue ---
+    // --- open the message queue ---
     mq_unlink(QUEUE_NAME); // clear out a leftover queue from a crashed run (error ignored)
 
     struct mq_attr attr;
@@ -164,7 +162,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    // --- Step 4: write the log header ---
+    // --- write the log header ---
     log_fp = fopen("log.txt", "w"); // "w" wipes the previous run's log
     if (log_fp == NULL) {
         perror("fopen log.txt");
@@ -180,7 +178,37 @@ int main(int argc, char *argv[]) {
     fprintf(log_fp, "-----\n");
     fflush(log_fp);
 
-    // TODO Steps 5-8: start threads, shut down, write summary
+    pthread_t makers[30], packers[30];
+    int maker_ids[30], packer_ids[30];
+
+    // start all making machines
+    for (int i = 0; i < M; i++) {
+        maker_ids[i] = i + 1; // each thread gets its own slot, never &i
+        pthread_create(&makers[i], NULL, make_hotdog, &maker_ids[i]);
+    }
+
+    // start all packing machines
+    for (int i = 0; i < P; i++) {
+        packer_ids[i] = i + 1;
+        pthread_create(&packers[i], NULL, pack_hotdog, &packer_ids[i]);
+    }
+
+    // wait until every maker has finished (all N hot dogs are in the queue)
+    for (int i = 0; i < M; i++) {
+        pthread_join(makers[i], NULL);
+    }
+
+    // one terminate message per packer; same priority keeps the queue FIFO,
+    // so these sit behind every real hot dog
+    hotdog_message term = {.type = TERMINATE_MSG, .hotdog_id = 0, .maker_id = 0};
+    for (int i = 0; i < P; i++) {
+        mq_send(mq, (char *)&term, sizeof(term), 0);
+    }
+
+    // wait until every packer has received its terminate message
+    for (int i = 0; i < P; i++) {
+        pthread_join(packers[i], NULL);
+    }
 
     fclose(log_fp);
     mq_close(mq);
