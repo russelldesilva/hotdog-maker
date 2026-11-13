@@ -6,9 +6,7 @@
 #include <pthread.h>
 #include <mqueue.h>
 #include <fcntl.h>
-#include <sys/stat.h>
 #include <unistd.h>
-#include <signal.h>
 #define QUEUE_NAME "/hotdog_queue"
 
 // --- Globals ---
@@ -25,6 +23,8 @@ const int MAKING_HOTDOG_DURATION = 4;
 const int SENDING_MSG_DURATION = 1;
 const int RECEIVING_MSG_DURATION = 1;
 const int PACKING_HOTDOG_DURATION = 2;
+#define MAX_NUM_MAKERS 30   // #define (not const int) so arrays sized by these can be initialised with {0}
+#define MAX_NUM_PACKERS 30
 
 // inputs
 int N; // number of hotdogs to be made
@@ -70,7 +70,12 @@ void *make_hotdog(void *arg) {
         do_work(SENDING_MSG_DURATION); // simulate sending the message
 
         hotdog_message msg = {.type = HOTDOG_MSG, .hotdog_id = hotdog_id, .maker_id = maker_id};
-        mq_send(mq, (char *)&msg, sizeof(msg), 0);
+        int send = mq_send(mq, (char *)&msg, sizeof(msg), 0);
+
+        if (send == -1) {
+            perror("mq_send");
+            return NULL;
+        }
 
         pthread_mutex_lock(&log_lock);
         fprintf(log_fp, "m%d puts %d\n", maker_id, hotdog_id);
@@ -86,7 +91,12 @@ void *pack_hotdog(void *arg) {
 
     while (1) {
         hotdog_message msg;
-        mq_receive(mq, (char *)&msg, sizeof(msg), NULL);
+        ssize_t bytes_rcv = mq_receive(mq, (char *)&msg, sizeof(msg), NULL);
+
+        if (bytes_rcv == -1) {
+            perror("mq_receive");
+            return NULL;
+        }
 
         // stop once we receive a terminate message
         if (msg.type == TERMINATE_MSG) {
@@ -154,9 +164,9 @@ int main(int argc, char *argv[]) {
     }
 
     if (parse_int(argv[1], "N (number of hotdogs)", 1, INT_MAX, &N) ||
-        parse_int(argv[2], "S (pool size)", 1, (long)N - 1, &S) ||
-        parse_int(argv[3], "M (number of makers)", 1, 30, &M) ||
-        parse_int(argv[4], "P (number of packers)", 1, 30, &P)) {
+        parse_int(argv[2], "S (pool size)", 1, N > 1 ? N-1 : 1, &S) ||  // S must be between 1 and N-1 inclusive, except if N=1, then S=1
+        parse_int(argv[3], "M (number of makers)", 1, MAX_NUM_MAKERS, &M) ||
+        parse_int(argv[4], "P (number of packers)", 1, MAX_NUM_PACKERS, &P)) {
         return 1;
     }
 
@@ -173,7 +183,10 @@ int main(int argc, char *argv[]) {
 
     struct mq_attr attr;
     memset(&attr, 0, sizeof(attr));
-    attr.mq_flags = 0;                         // blocking mode
+    attr.mq_flags = 0;                         // blocking mode 
+                                               // - thread blocks when trying to insert into full queue
+                                               // - or when trying to receive from empty queue
+                                               // - otherwise thread will just exit with error
     attr.mq_maxmsg = S;                        // pool capacity
     attr.mq_msgsize = sizeof(hotdog_message);  // one message = one hot dog
 
@@ -199,8 +212,8 @@ int main(int argc, char *argv[]) {
     fprintf(log_fp, "-----\n");
     fflush(log_fp);
 
-    pthread_t makers[30], packers[30];
-    int maker_ids[30], packer_ids[30];
+    pthread_t makers[MAX_NUM_MAKERS], packers[MAX_NUM_PACKERS];
+    int maker_ids[MAX_NUM_MAKERS], packer_ids[MAX_NUM_PACKERS];
 
     // start all making machines
     for (int i = 0; i < M; i++) {
@@ -236,14 +249,19 @@ int main(int argc, char *argv[]) {
     mq_unlink(QUEUE_NAME);
 
     // --- generate summary ---
-    int made[31] = {0};
-    int packed[31] = {0};
+    int made[MAX_NUM_MAKERS + 1] = {0};
+    int packed[MAX_NUM_PACKERS + 1] = {0};
 
     log_fp = fopen("log.txt", "r"); // reopen with read permissions only
+    if (log_fp == NULL) {
+        perror("fopen log.txt");
+        return 1;
+    }
     
     char line[256];
     int a, b, c;
 
+    // header line automatically skipped - does not match either pattern
     while (fgets(line, sizeof(line), log_fp) != NULL) {
         if (sscanf(line, "m%d puts %d", &a, &b) == 2) {
             made[a]++;
@@ -254,6 +272,11 @@ int main(int argc, char *argv[]) {
 
     fclose(log_fp);
     log_fp = fopen("log.txt", "a"); // reopen with append permissions only
+
+    if (log_fp == NULL) {
+        perror("fopen log.txt");
+        return 1;
+    }
 
     fprintf(log_fp, "-----\n");
     fprintf(log_fp, "summary:\n");
