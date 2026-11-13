@@ -131,6 +131,22 @@ static int parse_int(const char *s, const char *name, long min, long max, int *o
     return 0;
 }
 
+// Reads the system's per-queue message limit from /proc/sys/fs/mqueue/msg_max.
+// Returns the limit, or -1 if it could not be read.
+static long read_msg_max(void) {
+    FILE *fp = fopen("/proc/sys/fs/mqueue/msg_max", "r");
+    if (fp == NULL) {
+        return -1;
+    }
+
+    long limit;
+    if (fscanf(fp, "%ld", &limit) != 1) {
+        limit = -1;
+    }
+    fclose(fp);
+    return limit;
+}
+
 int main(int argc, char *argv[]) {
     if (argc != 5) {
         fprintf(stderr, "Usage: %s <number of hotdogs> <size of pool> <number of makers> <number of packers>\n", argv[0]);
@@ -141,6 +157,14 @@ int main(int argc, char *argv[]) {
         parse_int(argv[2], "S (pool size)", 1, (long)N - 1, &S) ||
         parse_int(argv[3], "M (number of makers)", 1, 30, &M) ||
         parse_int(argv[4], "P (number of packers)", 1, 30, &P)) {
+        return 1;
+    }
+
+    // unprivileged processes can't create a queue holding more than msg_max messages
+    // (root ignores this limit, so skip the check there)
+    long msg_max = read_msg_max();
+    if (geteuid() != 0 && msg_max > 0 && S > msg_max) {
+        fprintf(stderr, "S (pool size) is %d but this system allows at most %ld messages per queue\n", S, msg_max);
         return 1;
     }
 
@@ -156,9 +180,6 @@ int main(int argc, char *argv[]) {
     mq = mq_open(QUEUE_NAME, O_CREAT | O_RDWR, 0644, &attr);
     if (mq == (mqd_t)-1) {
         perror("mq_open");
-        if (errno == EINVAL) {
-            fprintf(stderr, "Note: S may exceed /proc/sys/fs/mqueue/msg_max\n");
-        }
         return 1;
     }
 
@@ -213,6 +234,39 @@ int main(int argc, char *argv[]) {
     fclose(log_fp);
     mq_close(mq);
     mq_unlink(QUEUE_NAME);
+
+    // --- generate summary ---
+    int made[31] = {0};
+    int packed[31] = {0};
+
+    log_fp = fopen("log.txt", "r"); // reopen with read permissions only
+    
+    char line[256];
+    int a, b, c;
+
+    while (fgets(line, sizeof(line), log_fp) != NULL) {
+        if (sscanf(line, "m%d puts %d", &a, &b) == 2) {
+            made[a]++;
+        } else if (sscanf(line, "p%d gets %d from m%d", &a, &b, &c) == 3) {
+            packed[a]++;
+        }
+    }
+
+    fclose(log_fp);
+    log_fp = fopen("log.txt", "a"); // reopen with append permissions only
+
+    fprintf(log_fp, "-----\n");
+    fprintf(log_fp, "summary:\n");
+    
+    for (int i=1; i<=M; i++) {
+        fprintf(log_fp, "m%d made %d\n", i, made[i]);
+    }
+
+    for (int i=1; i<=P; i++) {
+        fprintf(log_fp, "p%d packed %d\n", i, packed[i]);
+    }
+
+    fclose(log_fp);
 
     return 0;
 }
