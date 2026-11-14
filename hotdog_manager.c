@@ -163,8 +163,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (parse_int(argv[1], "N (number of hotdogs)", 1, INT_MAX, &N) ||
-        parse_int(argv[2], "S (pool size)", 1, N > 1 ? N-1 : 1, &S) ||  // S must be between 1 and N-1 inclusive, except if N=1, then S=1
+    if (parse_int(argv[1], "N (number of hotdogs)", 2, INT_MAX, &N) || // S >= 1 and S < N, therefore min(N) = 2
+        parse_int(argv[2], "S (pool size)", 1, N-1, &S) ||
         parse_int(argv[3], "M (number of makers)", 1, MAX_NUM_MAKERS, &M) ||
         parse_int(argv[4], "P (number of packers)", 1, MAX_NUM_PACKERS, &P)) {
         return 1;
